@@ -1,0 +1,108 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "rag: ask（问一个问题，看引用与耗时）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "rag.cli",
+      "args": ["ask", "混合检索为什么要用 RRF 融合？", "--debug"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${workspaceFolder}\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "name": "rag: ingest（重建索引）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "rag.cli",
+      "args": ["ingest", "data/corpus"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${workspaceFolder}\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1"
+      }
+    },
+    {
+      "name": "rag: eval（跑评测集）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "rag.cli",
+      "args": ["eval", "--dataset", "data/eval/qa-v2.jsonl", "--tag", "debug"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${workspaceFolder}\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1"
+      }
+    },
+    {
+      "name": "rag: serve（FastAPI，端口 8000）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "rag.cli",
+      "args": ["serve", "--server", "fastapi", "--port", "8000"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${workspaceFolder}\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1"
+      }
+    },
+    {
+      "name": "rag: MCP 服务器（stdio，供编辑器调用）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "rag.mcp.server",
+      "args": ["--log-level", "DEBUG"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "HF_HOME": "${workspaceFolder}\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1"
+      }
+    },
+    {
+      "name": "测试：当前文件",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    },
+    {
+      "name": "测试：全部（unittest discover）",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-s", "tests", "-v"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  ]
+}

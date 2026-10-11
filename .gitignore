@@ -19,6 +19,9 @@ deps/
 .testtmp/
 
 # 编辑器
-.vscode/
+# 注意：.vscode/ 里的开发配置（调试配置 / 任务 / 推荐扩展）是**要入库**的，
+# 只有含本机绝对路径的那两个 MCP 文件不入库——模板以 *.example 的形式提供。
+.vscode/mcp.json
+.cursor/mcp.json
 .idea/
 .DS_Store

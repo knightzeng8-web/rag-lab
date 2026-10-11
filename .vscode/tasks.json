@@ -1,0 +1,123 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "corpusDir",
+      "type": "promptString",
+      "description": "要导入的文档目录（build_corpus 的输入）",
+      "default": "data/corpus"
+    },
+    {
+      "id": "question",
+      "type": "promptString",
+      "description": "要问的问题",
+      "default": "混合检索为什么要用 RRF 融合？"
+    },
+    {
+      "id": "tag",
+      "type": "promptString",
+      "description": "本次实验标签（写入 ablation.csv 的 tag 列）",
+      "default": "manual"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "rag: 重建索引（ingest data/corpus）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "rag.cli", "ingest", "data/corpus"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 提问",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "rag.cli", "ask", "${input:question}", "--debug"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 评测（v2 评测集）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "rag.cli", "eval", "--dataset", "data/eval/qa-v2.jsonl", "--tag", "${input:tag}"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 消融实验（BGE + 全部行）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/ablation.py", "--embedder", "bge", "--heavy", "--extra", "paths.eval=data/eval/qa-v2.jsonl"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 全部测试（109+ 条）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1" } },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 离线冒烟自检",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/smoke_offline.py"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 重依赖自检（BGE/CE/faiss）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/check_heavy_deps.py"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "语料: 导入文档目录（build_corpus）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/build_corpus.py", "${input:corpusDir}", "--out", "data/corpus"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "语料: 生成本地评测候选（启发式，离线）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/gen_eval_candidates.py", "generate", "--provider", "heuristic", "--per-doc", "2", "--max-docs", "48"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "语料: 生成评测候选（LLM，需 DEEPSEEK_API_KEY）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/gen_eval_candidates.py", "generate", "--provider", "llm", "--model", "deepseek-chat", "--api-base", "https://api.deepseek.com/v1", "--api-key-env", "DEEPSEEK_API_KEY", "--per-doc", "2", "--max-docs", "30"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 起服务（FastAPI，端口 8000）",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "rag.cli", "serve", "--server", "fastapi", "--port", "8000"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "rag: 拒答阈值扫描",
+      "type": "shell",
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["scripts/scan_refusal_threshold.py"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "HF_HOME": "${workspaceFolder}\\.hf-cache", "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" } },
+      "problemMatcher": []
+    }
+  ]
+}

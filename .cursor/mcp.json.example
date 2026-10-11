@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "rag-lab": {
+      "command": "<改成你的 venv python 绝对路径>",
+      "args": ["-m", "rag.mcp.server"],
+      "cwd": "<改成你的项目根绝对路径>",
+      "env": {
+        "PYTHONPATH": "<改成你的项目根绝对路径>",
+        "HF_HOME": "<改成你的项目根绝对路径>\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  }
+}
