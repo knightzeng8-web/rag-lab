@@ -1621,11 +1621,22 @@ def _cell(text: str, limit: int = 90) -> str:
 
 
 def render_review_md(candidates: Sequence[Candidate], source_path: str = "") -> str:
-    """渲染人工复核表；每行以 ``- [ ]`` 开头，方便在编辑器里直接勾选。"""
+    """渲染人工复核表；每行以 ``- [ ]`` 开头，方便在编辑器里直接勾选。
+
+    表头里的来源路径**只写相对项目根的路径**：复核表会进版本库，写绝对路径会把本机
+    用户名与目录结构一起提交上去。
+    """
+    shown = source_path or "data/eval/candidates.jsonl"
+    try:
+        relative = os.path.relpath(shown, ROOT)
+        if not relative.startswith(".."):
+            shown = relative.replace(os.sep, "/")
+    except ValueError:  # 不同盘符时 relpath 会抛错，直接用原值
+        pass
     lines: List[str] = [
         "# 评测集候选复核表",
         "",
-        f"- 候选来源：`{source_path or 'data/eval/candidates.jsonl'}`（本表由 generate 子命令生成）",
+        f"- 候选来源：`{shown}`（本表由 generate 子命令生成）",
         f"- 候选数量：{len(candidates)}",
         "",
         "## 筛选规则（勾选前请逐条确认）",

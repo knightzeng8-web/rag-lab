@@ -1,6 +1,6 @@
-# 评测集候选复核表
+﻿# 评测集候选复核表
 
-- 候选来源：`C:\Users\zeng\Documents\deepseek-harness\default-workspace\rag-lab\data\eval\candidates.jsonl`（本表由 generate 子命令生成）
+- 候选来源：`data\eval\candidates.jsonl`（本表由 generate 子命令生成）
 - 候选数量：48
 
 ## 筛选规则（勾选前请逐条确认）

@@ -8,11 +8,12 @@ rag-lab 依赖安装脚本 —— 请在**你自己的** PowerShell 窗口里运
 把 venv 放到沙箱之外，pip 就一切正常：既不需要 takeown，也不需要改任何一条 ACL。
 
 用法：
-    cd C:\Users\zeng\Documents\deepseek-harness\default-workspace\rag-lab
+    cd <项目根目录>
     powershell -ExecutionPolicy Bypass -File .\setup.ps1                       # CPU 版 torch（约 250MB，推荐先跑）
     powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Torch cuda           # CUDA 版 torch（约 2.5GB，用上 RTX 4070）
     powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Mirror               # pip 走清华源
     powershell -ExecutionPolicy Bypass -File .\setup.ps1 -VenvDir C:\raglab-venv
+    $env:RAGLAB_BASE_PYTHON = "C:\path\to\python.exe"                          # 指定基础 Python（可选）
 
 装完自检（两条都走项目里的 run.ps1，它会自动找到上面这个 venv）：
     .\run.ps1 -m unittest discover -s tests
@@ -29,10 +30,22 @@ $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 Set-Location $Root
 
-$BasePython = "C:\Users\zeng\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
-if (-not (Test-Path $BasePython)) {
-    throw "找不到基础 Python：$BasePython（PATH 上的 python 是 Microsoft Store 占位符，不能用）"
+# 基础 Python 的查找顺序：显式环境变量 -> DSH 自带运行时 -> 常见 python.org 安装位置。
+# 这里用 $env:USERPROFILE 拼接而不是写死绝对路径，避免把本机用户名提交进仓库。
+$baseCandidates = @(
+    @(
+        $env:RAGLAB_BASE_PYTHON,
+        (Join-Path $env:USERPROFILE ".dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe")
+    ) | Where-Object { $_ -and (Test-Path $_) }
+)
+if ($baseCandidates.Count -eq 0) {
+    throw "找不到可用的基础 Python：请设置 `$env:RAGLAB_BASE_PYTHON 指向 python.exe（PATH 上的 python 若是 Microsoft Store 占位符则不可用）"
 }
+$BasePython = @($baseCandidates)[0]
+Write-Host "    基础 Python：$BasePython" -ForegroundColor DarkGray
 
 # pip 缓存也放到项目外，避免再被沙箱 ACL 绊到
 $env:PIP_CACHE_DIR = Join-Path $env:LOCALAPPDATA "raglab-pip-cache"
