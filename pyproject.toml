@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-lab"
+version = "0.1.0"
+description = "领域知识库问答：可插拔、可评测的复杂 RAG 工程骨架（混合检索 + 重排 + 引用溯源）"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+full = [
+    "pyyaml>=6.0",
+    "sentence-transformers>=2.6",
+    "faiss-cpu>=1.8",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+rag = "rag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

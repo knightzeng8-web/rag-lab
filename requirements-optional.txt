@@ -1,0 +1,23 @@
+# 可选依赖：按需安装，每一组都对应一个可以升级的组件。
+# 缺失任何一组都不会导致程序崩溃，只会自动降级（日志与 /health 会显示当前生效组件）。
+
+# 读取 YAML 配置（不装则把 configs/default.yaml 改成 default.json）
+pyyaml>=6.0
+
+# 神经向量与 Cross-Encoder 重排（中文检索用 BAAI/bge-* 系列）
+# CPU 也能跑；首次使用会从 HuggingFace 下载模型（国内可设 HF_ENDPOINT=https://hf-mirror.com）
+sentence-transformers>=2.6
+
+# 十万块以上的向量检索加速
+faiss-cpu>=1.8
+
+# HTTP 服务（不装则使用标准库 http.server 实现，接口一致）
+fastapi>=0.110
+uvicorn>=0.29
+
+# 更多语料格式
+pypdf>=4.0
+python-docx>=1.1
+
+# 测试与开发
+pytest>=8.0

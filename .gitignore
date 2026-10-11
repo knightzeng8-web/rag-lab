@@ -1,0 +1,24 @@
+# 索引与产物
+.index/
+reports/
+*.npy
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# 本地环境（由 setup.ps1 / run.ps1 / 测试创建，无需入库）
+deps/
+.pip-cache/
+.hf-cache/
+.tmp/
+.testtmp/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

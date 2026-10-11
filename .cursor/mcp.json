@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "rag-lab": {
+      "command": "D:\\rag-lab-venv\\Scripts\\python.exe",
+      "args": ["-m", "rag.mcp.server"],
+      "cwd": "C:\\Users\\zeng\\Documents\\deepseek-harness\\default-workspace\\rag-lab",
+      "env": {
+        "PYTHONPATH": "C:\\Users\\zeng\\Documents\\deepseek-harness\\default-workspace\\rag-lab",
+        "HF_HOME": "C:\\Users\\zeng\\Documents\\deepseek-harness\\default-workspace\\rag-lab\\.hf-cache",
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  }
+}

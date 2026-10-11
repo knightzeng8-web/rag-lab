@@ -1,0 +1,95 @@
+# rag-lab 默认配置
+# 加载优先级：本文件的键值 <- 命令行 --set a.b.c=value 覆盖
+# 所有相对路径都相对于项目根目录（含 pyproject.toml 的那一层）
+#
+# 提示：YAML 需要 pyyaml（pip install pyyaml）。不想装也可以把本文件另存为
+# configs/default.json，加载逻辑完全一致。
+
+project: rag-lab
+
+paths:
+  corpus: data/corpus          # 语料目录（ingest 默认扫描这里）
+  index: .index                # 索引落盘目录（向量 + BM25 + 元数据）
+  eval: data/eval/qa.jsonl      # 评测集
+  reports: reports              # 评测报告与消融 CSV
+  web: web                      # 前端静态目录
+
+chunking:
+  # structural（结构感知，推荐）| fixed（固定窗口，baseline）| recursive（递归回退）
+  strategy: structural
+  max_chars: 512
+  overlap_chars: 96
+  min_chars: 80
+
+index:
+  backend: auto                # auto（有 faiss 用 faiss，否则 numpy）| numpy | faiss
+  auto_rebuild: true           # 语料文件指纹变化时自动重建索引
+
+embedder:
+  # auto：sentence-transformers -> OpenAI 兼容接口 -> 离线哈希向量（逐级降级）
+  provider: auto               # auto | hashing | bge | openai
+  dim: 1024                    # 仅 hashing 使用
+  model: BAAI/bge-small-zh-v1.5
+  device: auto                 # auto（有 CUDA/MPS 就用）| cpu | cuda | mps
+  batch_size: 32
+  normalize: true
+  api_base: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  api_model: text-embedding-3-small
+  timeout: 60
+
+retrieval:
+  top_k: 5                     # 最终交给生成器的片段数
+  top_n_vector: 20             # 向量召回候选数
+  top_n_bm25: 20               # BM25 召回候选数
+  rrf_k: 60                    # RRF 平滑常数
+  weights:
+    vector: 1.0
+    bm25: 1.0
+  bm25:
+    k1: 1.5
+    b: 0.75
+  rewrite:
+    enabled: true
+    strategy: auto             # auto | identity | keyword | multi_query | hyde
+    num_queries: 3
+    max_keywords: 8
+  rerank:
+    enabled: false             # 打开即启用重排（auto 会优先 Cross-Encoder）
+    provider: auto             # auto | none | lexical | cross_encoder | llm
+    model: BAAI/bge-reranker-base
+    top_n: 20
+    device: auto               # auto（有 CUDA/MPS 就用）| cpu | cuda | mps
+
+generation:
+  provider: auto               # auto | extractive | openai
+  model: gpt-4o-mini
+  api_base: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_tokens: 800
+  timeout: 90
+  max_context_chunks: 6        # 送给生成器的片段上限
+  max_context_chars: 4000      # 上下文总字符上限（控成本）
+  quote_chars: 240             # 引用原文截断长度
+  allow_refusal: true
+  # 离线抽取式生成器的拒答判据（scripts/scan_refusal_threshold.py 网格扫描：0.10/2 -> 12/12）
+  # 余量很小，必须如实记录：可回答题里最弱的 q08 覆盖率 0.100（恰好压在阈值上），
+  # 不可回答题里最强的 q12 是 0.087，只差 0.013；评测集扩到 60 题以上后必须重扫。
+  extractive_max_sentences: 3
+  extractive_min_coverage: 0.10
+  extractive_min_hits: 2
+  system_prompt: null          # 想换提示词就写在这里（多行字符串）
+
+multihop:
+  enabled: false               # 打开后做迭代式检索（第二轮桥接查询）
+  max_rounds: 2
+  bridge_terms: 3
+
+eval:
+  ks: [1, 3, 5, 10]
+  max_items: 0                 # >0 时只跑前 N 题（调试用）
+  out_dir: reports
+
+logging:
+  level: INFO
