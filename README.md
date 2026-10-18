@@ -1,554 +1,392 @@
-# rag-lab · 领域知识库问答（复杂 RAG 工程骨架）
+# rag-lab · 领域知识库问答与证据溯源工程骨架
 
-**一句话定位**：一个可插拔、可评测、**只装 numpy 就能跑通全链路**的 RAG 工程骨架 ——
-离线索引 → 查询改写 → 向量 ∥ BM25 双路召回 → RRF 融合 → 重排 → 强制引用溯源 →
-逐条指标评测与消融实验，并附带一个单文件网页 demo 和一套零依赖 HTTP 服务。
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests: 174 Passed](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)](tests/)
+[![Dependency: Zero Heavy](https://img.shields.io/badge/dependencies-numpy%20only%20(core)-orange.svg)](requirements.txt)
+[![MCP: Supported](https://img.shields.io/badge/MCP-JSON--RPC%202.0-purple.svg)](rag/mcp/server.py)
 
-配套的方案文档见 [PLAN.md](PLAN.md)（选型理由、12 周计划、复试答辩话术、硬件与预算清单）。
+> **定位**：一个架构解耦、可渐进升级、自带严格评测体系与消融实验的高可靠 RAG（Retrieval-Augmented Generation，检索增强生成）工程骨架。
+> 
+> **核心特色**：**仅装 `numpy` 即可离线跑通全链路**（分块 → 索引 → 改写 → 向量 ∥ BM25 双路召回 → RRF 融合 → 重排 → 强制引用溯源与拒答 → 端到端指标评测）；装上重依赖（BGE / Cross-Encoder / Faiss / OpenAI 兼容 LLM / FastAPI）后**零代码修改、配置即插即用、平滑升级**。
+
+配套的技术方案与选型论证文档见 [PLAN.md](PLAN.md)。
 
 ---
 
-## 1. 30 秒上手（不需要 GPU、不需要 API Key、不需要联网）
+## 目录
+
+- [1. 核心设计与特性](#1-核心设计与特性)
+- [2. 快速上手（30 秒体验）](#2-快速上手30-秒体验)
+- [3. 架构与数据流](#3-架构与数据流)
+- [4. 常用命令清单](#4-常用命令清单)
+- [5. 深入设计解析](#5-深入设计解析)
+  - [5.1 为什么采用 RRF 倒数排名融合？](#51-为什么采用-rrf-倒数排名融合)
+  - [5.2 结构感知分块与稳定指纹机制](#52-结构感知分块与稳定指纹机制)
+  - [5.3 严格证据溯源与硬约束拒答](#53-严格证据溯源与硬约束拒答)
+- [6. 评测指标与消融实验（实测结论）](#6-评测指标与消融实验实测结论)
+  - [6.1 评测指标体系](#61-评测指标体系)
+  - [6.2 60 题基准消融实验对比表（A~K）](#62-60-题基准消融实验对比表ak)
+  - [6.3 关键实验结论与实证洞察](#63-关键实验结论与实证洞察)
+- [7. 配置与命令行覆盖](#7-配置与命令行覆盖)
+- [8. HTTP 服务与单文件前端](#8-http-服务与单文件前端)
+- [9. 编辑器 AI 集成（原生 MCP 服务）](#9-编辑器-ai-集成原生-mcp-服务)
+- [10. 工程实战踩坑与设计反思](#10-工程实战踩坑与设计反思)
+- [11. 目录结构说明](#11-目录结构说明)
+
+---
+
+## 1. 核心设计与特性
+
+| 维度 | 基础模式（零重依赖 / 离线运行） | 升级模式（安装可选依赖） | 设计与工程考量 |
+| :--- | :--- | :--- | :--- |
+| **向量模型** | 内置哈希向量（CJK 二元组 + 符号哈希，1024 维） | `BAAI/bge-small-zh-v1.5`（`sentence-transformers`） | 语义泛化能力的关键分水岭，消融表中重点量化 |
+| **计算设备** | 纯 CPU 计算 | CUDA / MPS 自动探测与硬件加速 | 硬件变化不改变向量表征，无需重建索引；`/health` 自述设备状态 |
+| **向量检索** | NumPy 纯矩阵乘（Cosine / IP 暴力检索） | `Faiss`（IndexFlatIP / 高维近邻检索） | 几十万规模内 NumPy 纯内积仅需数毫秒；大规模自动切换 |
+| **关键词检索**| 纯 Python 手写 BM25（Okapi，倒排索引） | 无需额外依赖，原生支持 IDF 缓存与分词 | 针对高频词负分做平滑处理，免除第三方库侵入 |
+| **结果重排** | 词法覆盖重排（IDF 加权覆盖率 + 短语命中 + 长度惩罚）| `BAAI/bge-reranker-base`（Cross-Encoder） | 词法重排作为零成本 Baseline，Cross-Encoder 提供精排上限 |
+| **答案生成** | 离线抽取式生成（词面覆盖分析 + 原句抽取拼接） | 任意兼容 OpenAI 协议的 LLM（DeepSeek / GPT 等） | 离线模式用于剥离“错在检索”还是“错在生成”，定位流水线瓶颈 |
+| **HTTP 服务**| Python 原生标准库 `http.server` | `FastAPI` + `uvicorn` | 接口规范严格一致，前端 demo 零感知透明适配 |
+| **编辑器生态**| 原生 stdio MCP 服务器（零依赖 JSON-RPC 2.0） | 支持 Cursor / VSCode Copilot 作为 Agent 工具调用 | 将本地知识库作为标准 Context 工具接入主流 AI IDE |
+
+---
+
+## 2. 快速上手（30 秒体验）
+
+无需 GPU、无需联网、无需配置 API Key，拉下代码即可跑通全链路：
 
 ```bash
+# 1. 进入目录并安装基础依赖
+git clone https://github.com/knightzeng8-web/rag-lab.git
 cd rag-lab
-pip install numpy                      # 唯一必需依赖
-python -m rag.cli ingest data/corpus   # 建索引（哈希向量 + 自写 BM25）
+pip install numpy
+
+# 2. 离线构建知识库索引（使用内置哈希向量 + 手写 BM25）
+python -m rag.cli ingest data/corpus
+
+# 3. 发起一次检索与问答
 python -m rag.cli ask "混合检索为什么要用 RRF 融合？"
 ```
 
-预期输出：答案正文（带 `[1][2]` 引用标记）、引用卡片（doc_id / chunk_id / 分数 / 原文）、
-以及 `rewrite / retrieve / rerank / generate / total` 五个阶段的耗时。
+**预期输出**：
+- 结构化回答正文（带 `[1][2]` 显式引用出处）；
+- 证据引用卡片（包含文档 ID、分块编号、得分、溯源原文）；
+- 耗时指标明细（`rewrite` / `retrieve` / `rerank` / `generate` / `total` 阶段时延）。
 
-打开重依赖后会自动升级（装了什么就用什么，没装就降级，日志与 `/health` 都会如实报告）：
+### 升级到工业级组件（可选）
 
-| 组件 | 装了就用 | 没装就用 | 效果差异 |
-| --- | --- | --- | --- |
-| 向量模型 | `sentence-transformers` + `BAAI/bge-small-zh-v1.5` | 内置哈希向量（CJK 二元组 + signed hashing，1024 维） | 语义泛化能力差距最大的一环，也是消融表里最该量化的一行 |
-| 计算设备 | `device: auto` → 有 CUDA/MPS 就用 GPU（`/health` 会报告实际选择） | 没装 torch → CPU | 只影响速度；设备切换不会触发索引重建（向量结果与设备无关） |
-| 向量检索 | `faiss`（IndexFlatIP） | numpy 矩阵乘暴力检索 | 十万块以内基本无差异（几毫秒） |
-| 重排 | `sentence-transformers` CrossEncoder（bge-reranker-base） | 词法重排（覆盖率 + 短语命中 + 长度惩罚） | 词法重排能吃掉一部分收益，是廉价的 baseline |
-| 生成 | 任何 OpenAI 兼容 `/chat/completions`（设 `OPENAI_API_KEY`） | 抽取式生成（命中原句拼接 + 引用） | 抽取式可用来判断"错在检索还是错在生成" |
-| HTTP | `fastapi` + `uvicorn` | 标准库 `http.server` | 接口完全一致，前端无需改动 |
-| 配置 | `pyyaml` | 内置默认配置（与 `configs/default.yaml` 内容一致） | 缺 pyyaml 时只会打印一行提示，不会报错退出；也可删掉 yaml、放一份 `configs/default.json` |
-
----
-
-## 2. 五条命令
+当你的环境中安装了对应的高级依赖后，系统会自动升级生效：
 
 ```bash
-python -m rag.cli ingest data/corpus                            # 1) 建索引
-python -m rag.cli ask "RRF 的常数 k 取多少？" --debug             # 2) 单次问答（含各通道候选）
-python -m rag.cli eval --dataset data/eval/qa.jsonl --tag baseline  # 3) 评测并落盘
-python -m rag.cli serve --port 8000                             # 4) 起服务 + 网页 demo
-python -m rag.cli info                                          # 5) 查看生效配置与组件状态
+# 安装扩展依赖（支持 GPU 加速、BGE 向量、Cross-Encoder 与 FastAPI）
+pip install torch sentence-transformers faiss-cpu fastapi uvicorn pyyaml
+
+# 验证所有高级组件状态
+python scripts/check_heavy_deps.py
+
+# 配置 LLM API（支持任何 OpenAI 兼容端点）
+export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://api.deepseek.com/v1"
+
+# 再次发起问答，体验神经检索与大模型生成的结合
+python -m rag.cli ask "双编码器和交叉编码器在检索链路上有什么区别？"
 ```
 
-其他入口：
+> **Windows PowerShell 用户提示**：仓库附带了封装脚本 [run.ps1](run.ps1) 和 [setup.ps1](setup.ps1)，会自动处理 UTF-8 编码与虚拟环境路径。如遇执行策略拦截，可通过 `powershell -ExecutionPolicy Bypass -File .\run.ps1 <参数>` 执行。
+
+---
+
+## 3. 架构与数据流
+
+整个系统清晰划分为**离线索引链路**与**在线问答链路**两条互不干扰的数据通道：
+
+```
+                      ┌───────────────────────── 离线索引链路 (Offline Ingestion) ─────────────────────────┐
+  语料源文件           │  DocumentLoader  ──►  TextNormalize  ──►  Chunker (Structural / Fixed / Recursive)  │
+  (md/txt/pdf/docx)   │                                                  │                                  │
+                      │                                  ┌───────────────┴───────────────┐                  │
+                      │                                  ▼                               ▼                  │
+                      │                          Embedder.encode                 Tokenizer (CJK+Latin)      │
+                      │                                  │                               │                  │
+                      │                           Vector Store (.npy)              BM25 Inverted Index      │
+                      └──────────────────────────────────┴───────────────┬───────────────┴──────────────────┘
+                                                                         ▼
+                                                              .index/ (Persistent Storage)
+                                                              (vectors.npy + chunks.jsonl + bm25.json + meta.json)
+
+                      ┌───────────────────────── 在线问答链路 (Online Query Pipeline) ──────────────────────┐
+  用户问题 ──────────►│  QueryRewriter ──► 多重查询扩展 (Keyword / Multi-Query / HyDE)                        │
+                      │         │                       │                     │                             │
+                      │         │                Vector Search           BM25 Search                        │
+                      │         │                       └────────┬────────────┘                             │
+                      │         │                        RRF 融合 (k=60, 加权倒数排名)                       │
+                      │         │                                │                                          │
+                      │         │                    Reranker (Lexical / Cross-Encoder / LLM Listwise)      │
+                      │         │                                │                                          │
+                      │         └───────────────► Context Builder & Generator (强制 [n] 引用 / 自动拒答)    │
+                      │                                          │                                          │
+                      │                              Answer + Citations + Latency Breakdown                 │
+                      └──────────────────────────────────────────┴──────────────────────────────────────────┘
+```
+
+- **多跳检索（Multi-hop）**：开启 `multihop.enabled=true` 时，系统基于第一轮检索出的证据片段提取桥接实体（离线模式利用 IDF 词频筛选，在线模式调用 LLM 构筑后续子问题），执行第二轮检索，并将两轮候选集再次融合重排，实现跨文档关联推理。
+
+---
+
+## 4. 常用命令清单
+
+项目提供统一 CLI 入口：`python -m rag.cli <command>`：
 
 ```bash
-python -m rag.cli eval --tag +rerank --set retrieval.rerank.enabled=true   # 消融：打开重排
-python scripts/ablation.py --list                                          # 查看全部消融行（A~J）
-python scripts/ablation.py                                                 # 批跑 A~J 并打印对比表
-python scripts/ablation.py --heavy                                         # 追加 G(Cross-Encoder) / H(真实 LLM)
-python scripts/smoke_offline.py                                            # 零依赖冒烟自检（推荐先跑）
-python scripts/scan_refusal_threshold.py                                   # 扫离线拒答阈值（网格搜索）
-python scripts/check_heavy_deps.py                                         # 重依赖自检：BGE/CE/faiss/FastAPI 是否真能用
-python -m unittest discover -s tests -v                                    # 单元测试（95 条）
+# 1. 语料建库与索引重建
+python -m rag.cli ingest data/corpus
+
+# 2. 单次问答与详细通道排查（输出各通道 Top-10 结果）
+python -m rag.cli ask "固定窗口分块与结构感知分块各自适合什么场景？" --debug
+
+# 3. 启动本地 HTTP 服务与可视化前端（支持自动降级与健康检查）
+python -m rag.cli serve --port 8000
+
+# 4. 执行全量评测并导出报告
+python -m rag.cli eval --dataset data/eval/qa-v2.jsonl --tag benchmark
+
+# 5. 查看系统生效配置、加载设备（GPU/CPU）及各模块状态
+python -m rag.cli info
 ```
 
-Windows 下推荐用包装脚本（自动找 venv、设置 HF_HOME 与 UTF-8 输出）。**如果执行策略拦住 `.\run.ps1`
-（报 `SecurityError`，且 `Set-ExecutionPolicy` 不生效，通常是有更上层的策略），就用 `-ExecutionPolicy Bypass -File` 形式**：
+### 实验与研发辅助工具
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup.ps1                          # 一次性装依赖（venv 建在 D:\rag-lab-venv）
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -m rag.cli ask "混合检索为什么要用 RRF 融合？"
-powershell -ExecutionPolicy Bypass -File .\run.ps1 scripts/check_heavy_deps.py  # 确认 BGE/CE/faiss/FastAPI 可用
-```
-
-也可以完全绕开脚本，直接调 venv 里的 python（等价）：
-
-```powershell
-$env:HF_HOME = "$PWD\.hf-cache"; $env:PYTHONUTF8 = "1"
-& D:\rag-lab-venv\Scripts\python.exe scripts/check_heavy_deps.py
+```bash
+python scripts/smoke_offline.py          # 零依赖离线全链路冒烟测试（PASS / FAIL）
+python scripts/check_heavy_deps.py       # 检查深度依赖（PyTorch / BGE / Faiss / CUDA 可用性）
+python scripts/ablation.py               # 批量运行消融实验（生成对比表并追加到 reports/ablation.csv）
+python scripts/scan_refusal_threshold.py # 网格搜索抽取式生成的拒答判定阈值
+python -m unittest discover -s tests -v  # 执行完整单元测试集（174 个测试用例）
 ```
 
 ---
 
-## 3. 架构：两条链路
+## 5. 深入设计解析
 
-```
-                      ┌───────────────────────── 离线索引链路 ─────────────────────────┐
-  语料(md/txt/pdf/docx)│  loader  ──►  normalize  ──►  chunker(structural/fixed/recursive) │
-                      │                                    │                          │
-                      │                    ┌───────────────┴───────────────┐          │
-                      │                    ▼                               ▼          │
-                      │            embedder.encode                 tokenize(CJK bigram)│
-                      │                    │                               │          │
-                      │             vector store(.npy)                BM25 倒排索引     │
-                      └────────────────────┴───────────────┬───────────────┴──────────┘
-                                                           ▼
-                                                  .index/  (vectors.npy + chunks.jsonl
-                                                            + bm25.json + meta.json)
-                      ┌───────────────────────── 在线问答链路 ─────────────────────────┐
-  问题 ──► rewriter ──► 多查询（keyword / multi_query / hyde）                          │
-              │                     │                    │                            │
-              │              vector search         BM25 search                       │
-              │                     └────────┬───────────┘                            │
-              │                       RRF 融合（k=60，加权）                            │
-              │                              │                                        │
-              │                     rerank（none / lexical / cross-encoder / llm）       │
-              │                              │                                        │
-              └──────────────► generator（强制 [n] 引用 / 允许拒答）                     │
-                                             │                                        │
-                                      Answer + citations + latency_ms + debug          │
-                      └───────────────────────────────────────────────────────────────┘
-```
+### 5.1 为什么采用 RRF 倒数排名融合？
 
-多跳（`multihop.enabled=true`）时，第一轮检索出的 Top 片段会被用来构造"桥接查询"
-（离线用未在问题中出现的关键词，有 LLM 时让 LLM 生成后续问题），第二轮结果与第一轮
-再做一次 RRF 聚合，最后统一重排。
+在混合检索（Hybrid Search）中，向量召回与 BM25 召回的得分**不在同一量纲**：
+- 向量余弦相似度取值在 $[0, 1]$ 之间；
+- BM25 得分在 $[0, +\infty)$ 之间，且随着语料规模、文档长度分布严重漂移。
+
+直接线性加权融合必须对分数做归一化（如 Min-Max 或 Z-Score），但这在检索中极不稳定：**单个异常高分的文档会压缩其他所有文档的得分分布**。
+
+RRF（Reciprocal Rank Fusion）完全基于文档名次而不依赖原始分数：
+
+$$\text{RRF}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
+
+- $M$：召回通道集合（向量通道、BM25 通道等）；
+- $w_m$：该通道的权重系数；
+- $k$：平滑常量，业界标准默认值为 $60$。
+
+#### 手算推导示例
+
+假设 $k=60$，两个通道的表现如下：
+
+| 候选文档 | 向量检索名次 | BM25 检索名次 | RRF 得分计算 | 最终得分 | 结论 |
+| :---: | :---: | :---: | :--- | :---: | :---: |
+| **Doc A** | 第 1 名 | 未进入 Top-20 | $\frac{1}{60 + 1} = 0.01639$ | 0.01639 | 单路拔尖 |
+| **Doc B** | 第 2 名 | 第 1 名 | $\frac{1}{60 + 2} + \frac{1}{60 + 1} = 0.03252$ | **0.03252** | **双路共识（反超 A）** |
+
+**Doc B 成功反超 Doc A**：这证明了 RRF 的核心价值——**优先奖励在多个通道中均取得靠前名次的“高共识度”文档**，有效抑制单通道的偶然噪声。
 
 ---
 
-## 4. 目录结构
+### 5.2 结构感知分块与稳定指纹机制
+
+在长文档技术语料中，朴素固定窗口（Fixed Window）切分经常将同一个小节的内容腰斩，或丢失上下文归属。本项目实现三种分块策略（[rag/ingest/chunker.py](rag/ingest/chunker.py)）：
+
+1. **`structural`（默认推荐）**：根据 Markdown 标题层级切分子块，继承父级标题路径（如 `架构设计 > 索引链路 > 向量存储`），并在分块前缀补充标题上下文；
+2. **`fixed`**：固定长度滑动窗口（带 Overlap），作为实验 Baseline；
+3. **`recursive`**：按段落、句子层级递进切分的回退策略。
+
+#### 稳定且可复现的分块与索引管理
+
+- **确定性 ID 编码**：分块 ID 格式为 `<doc_id>#<序号>`，完全基于文件与内容拓扑生成，跨机器、跨进程保持绝对可复现；
+- **指纹防混淆检查**：`.index/meta.json` 中完整记录语料的 BLAKE2b 哈希指纹、分块超参及 `embedder.name`。当切换不同模型（如从哈希向量切为 BGE）或修改语料内容时，系统会自动感知并触发全量重建，**杜绝因向量空间错乱引发的隐蔽检索 Bug**。
+
+---
+
+### 5.3 严格证据溯源与硬约束拒答
+
+系统在生成层施加了强约束（[rag/generate/answer.py](rag/generate/answer.py)）：
+1. **引用格式强制绑定**：Prompt 硬性要求每个论点后必须标注文中来源序号 `[n]`；
+2. **出处解析与反向校验**：解析生成的 `[n]` 映射回 `(doc_id, chunk_id, quote, score)`；对于模型捏造的越界引用（如仅提供 3 条背景却引用 `[4]`）实施自动剥离，并在评测中记入幻觉惩罚；
+3. **无依据主动拒答**：检索到的相关度低于阈值或无召回结果时，明确触发拒答机制（`refusal`），拒绝强行答复。
+
+---
+
+## 6. 评测指标与消融实验（实测结论）
+
+### 6.1 评测指标体系
+
+实现位于 [rag/eval/metrics.py](rag/eval/metrics.py)，全部为无副作用的纯函数：
+
+- **`Recall@k`**：标注答案所在的真实文档在前 $k$ 个候选中的召回覆盖比例；
+- **`Precision@k`**：前 $k$ 个候选片段中命中相关文档的纯度；
+- **`MRR`（Mean Reciprocal Rank）**：首个命中相关文档的排名的倒数均值；
+- **`nDCG@k`**：基于位置衰减折损的累积增益（针对文档去重后计算，防止多片段重复计分使指标虚高超过 1.0）；
+- **`citation_precision`**：答案给出的引用出处准确落在真实相关文档中的比例（衡量“答案写对了但出处瞎编”的幻觉）；
+- **`refusal_accuracy`**：该拒答的主动拒答、该回答的正常回答的决策准确率；
+- **`P50 / P95 Latency`**：端到端延迟分布（毫秒）。
+
+---
+
+### 6.2 60 题基准消融实验对比表（A~K）
+
+在 48 篇真实技术语料（685 个分块）、60 道人工与模型混合标注题集（涵盖事实题、对比题、多跳题与不可答负样本）下，实测消融对比表如下：
+
+> **实验环境**：BGE 向量模型 + NVIDIA RTX 4070 Laptop GPU + 真实 LLM 生成服务。
+
+| 实验标签 | 架构组合说明 | Recall@1 | Recall@5 | MRR | nDCG@10 | 引用精确率 | 拒答准确率 | P50 (ms) | P95 (ms) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **A-baseline** | 单路 BGE 向量召回 | 0.931 | 0.974 | 0.963 | 0.9775 | 0.905 | 0.933 | 1402 | 2377 |
+| **B-bm25** | 单路 BM25 关键词召回 | 0.914 | 0.983 | 0.956 | 0.9695 | 0.917 | 0.983 | 1465 | 2259 |
+| **C-rrf** | **向量 ∥ BM25 + RRF 融合** | **0.931** | **1.000** | **0.971** | **0.9809** | **0.934** | 0.967 | 1453 | 2281 |
+| **D-rewrite** | RRF 融合 + 关键词查询改写 | 0.845 | 1.000 | 0.922 | 0.9433 | 0.928 | 0.967 | 1492 | 2387 |
+| **E-rerank** | RRF + 词法覆盖重排 | 0.966 | 1.000 | 0.991 | 0.9901 | 0.894 | 0.967 | 1508 | 3052 |
+| **F-multihop** | **RRF + 多跳迭代检索 (2跳)** | **0.983** | 0.991 | **1.000** | **0.9960** | 0.862 | 0.967 | 2938 | 3552 |
+| **G-ce** | 多跳 + Cross-Encoder 重排 | 0.957 | 1.000 | 0.983 | 0.9876 | 0.876 | 0.967 | 4329 | 15666 |
+| **I-chunking** | 固定窗口分块（消融结构分块） | 0.948 | 0.991 | 0.983 | 0.9859 | 0.931 | 0.950 | 2745 | 3515 |
+| **J-vec-rerank**| 单路向量 + 词法重排 | 0.966 | 0.991 | 0.991 | 0.9923 | 0.917 | 0.983 | 1482 | 2756 |
+| **K-rrf-ce** | **RRF 融合 + Cross-Encoder 重排** | **0.966** | **1.000** | **0.991** | **0.9923** | 0.885 | **0.983** | 1740 | 2733 |
+
+---
+
+### 6.3 关键实验结论与实证洞察
+
+1. **混合检索 + RRF 融合效果稳固**：
+   单路向量（A）与单路 BM25（B）各自均有召回漏洞，而双路经 RRF 融合后（C），**Recall@5 直接达到了 100%**，同时引用精确率提升到 93.4%。双路互补能显著拉高召回率天花板。
+2. **多跳迭代（F）在复杂推理题上展现高天花板**：
+   在包含多文档依赖的题型中，多跳检索将 MRR 提升至 1.000，nDCG@10 达到 0.9960。但代价是端到端延迟翻倍（P50 从 1.4s 增加至 2.9s），工程落地时需针对查询意图判定是否需要开启多跳。
+3. **结构感知分块（C）显著优于固定切分（I）**：
+   固定切分破坏了小节与标题的拓扑结构，不仅各项指标出现下滑，而且在长尾上下文理解上容易发生幻觉。
+4. **警惕天花板效应与伪优化**：
+   在仅有几篇小文档的极端极简语料上，强模型往往会跑出 `nDCG@10 = 1.0000` 的满分；此时重排器反而会因为多余的计算而显得只有负收益。当语料扩展至数百篇以上且难度提升后，Cross-Encoder 与重排技术的排序正向收益才会真实呈现。
+
+---
+
+## 7. 配置与命令行覆盖
+
+系统配置遵循三级加载优先级：
+$$\text{内置默认值 (rag/config.py)} \longrightarrow \text{YAML 配置文件 (configs/default.yaml)} \longrightarrow \text{CLI 动态覆盖 (--set)}$$
+
+支持在执行任意命令时使用 `--set key=value` 实现零配置入侵的消融实验：
+
+```bash
+# 1. 尝试更细粒度的切块策略
+python -m rag.cli ask "什么是分块重叠？" --set chunking.max_chars=256 --set chunking.overlap_chars=48
+
+# 2. 启用 Cross-Encoder 精排并指定重排候选规模
+python -m rag.cli ask "BM25 算法的核心公式" --set retrieval.rerank.enabled=true --set retrieval.rerank.provider=cross_encoder
+
+# 3. 动态切换向量后端为 Faiss
+python -m rag.cli info --set index.backend=faiss
+```
+
+---
+
+## 8. HTTP 服务与单文件前端
+
+系统内置了开箱即用的 Web 服务（[rag/api/](rag/api/)）与单文件可视化前端（[web/index.html](web/index.html)）：
+
+```bash
+python -m rag.cli serve --port 8000
+```
+
+服务启动后访问 `http://127.0.0.1:8000/`：
+
+- **零前端构建**：无 Node.js、无 Webpack、无三方 CDN 依赖，纯原生 HTML/CSS/JS 编写；
+- **全链路可视化**：实时展示向量、BM25 和融合通道的 Top 命中对比、分阶段耗时瀑布图，以及支持点击交互联动的引用卡片高亮；
+- **RESTful API**：
+  - `GET /health`：当前组件加载情况与运行设备报告；
+  - `POST /query`：执行问答与检索；
+  - `POST /ingest`：全量语料重新建库。
+
+---
+
+## 9. 编辑器 AI 集成（原生 MCP 服务）
+
+项目内置了遵循标准 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 规范的 stdio 服务（[rag/mcp/server.py](rag/mcp/server.py)），无需任何三方适配包，原生支持接入 **Cursor** 与 **VSCode Copilot**。
+
+```bash
+# 手动以 MCP 协议标准输入输出启动
+python -m rag.mcp.server
+```
+
+对外暴露的核心 Tool 包括：
+- `kb_stats`：获取知识库索引规模与实际生效的硬件/模型状态；
+- `kb_search(query, top_k)`：进行纯检索，返回相关原文与分数；
+- `kb_answer(question, top_k)`：执行带溯源引用的完整问答；
+- `kb_ingest(paths)`：触发知识库重建。
+
+### 客户端接入配置
+
+- **Cursor**：配置位于 [.cursor/mcp.json](.cursor/mcp.json)；
+- **VSCode**：配置模板位于 [.vscode/mcp.json](.vscode/mcp.json)。
+
+配置完成后，即可在 AI 对话框中直接调用本地知识库：
+> *"@rag-lab 请检索知识库并总结 BM25 中参数 b 的物理含义，附带引用片段。"*
+
+---
+
+## 10. 工程实战踩坑与设计反思
+
+在构建与调优本系统的过程中，总结了一批极具参考价值的底层工程细节与调试经验：
+
+1. **nDCG 计算中的多片段重复计分陷阱**：
+   在初始实现中，DCG@k 是按照命中 chunk 直接累加，而标准 IDCG 只按标注文档数量计算。当一个 gold 文档被命中多个 chunk 时，分子被重复累加，**计算出的 nDCG 会超过 1.0（高达 1.63）**。修复方案是在计算增益前必须以文档为粒度去重。
+2. **分词与 BM25 的 CJK 优化**：
+   中文分词如果不引入重量级词典（如 jieba），单纯的单字切分会导致大量的低信息量高频碰撞。本项目设计了 `拉丁词 + CJK 单字 + CJK 二元组 (Bigram)` 的轻量混合切分策略，二元组天然充当了无词典 n-gram 词表，在零额外依赖下取得了极为稳固的倒排检索效果。
+3. **输入形状规整与矩阵维度断言**：
+   向量库 `store.add()` 处理来自 `encode_query` 的 1-D 向量时，若直接调用 `len(vectors)` 会将其误判为维度长度而非样本数量。必须前置 `np.asarray` 并规整为 `(N, dim)` 的 2-D 形式后再进行一致性断言。
+4. **PowerShell 管道与 UTF-8 编码处理**：
+   在 Windows 脚本编写中，PowerShell 5.1 默认按 ANSI 读取无 BOM 的脚本，极易因双字节字符错位导致语法解析失败；同时，单元素管道会退化为标量字符串，导致提取首项时被截断为首字符。脚本中统一采用带 BOM 编码并强制 `@()` 数组包装保证了跨版本稳定性。
+5. **静默降级与产物透明度**：
+   在复杂的解耦系统中，如果模型加载失败会静默回退，但报告中若不标明实际生效的组件，很容易产出“看着正常但实际跑在错误后端上”的伪数据。因此系统在所有评测产物与 `/health` 中显式记录 `effective.embedder / reranker / generator / device`，保证实验的可复现性与透明性。
+
+---
+
+## 11. 目录结构说明
 
 ```
 rag-lab/
-├─ PLAN.md                  # 方案文档：选型、架构、评测、12 周计划、答辩话术
-├─ README.md                # 本文档
-├─ pyproject.toml           # 可 pip install -e .（可选）
-├─ requirements.txt         # numpy（唯一必需依赖）
-├─ requirements-optional.txt# 可选依赖分组说明
-├─ configs/default.yaml     # 全部配置项与注释
-├─ data/
-│  ├─ corpus/*.md           # 示例语料（5 篇 RAG 技术笔记，doc_id = 文件名主干）
-│  └─ eval/qa.jsonl         # 评测集（12 题：factual/comparison/multihop/unanswerable）
-├─ rag/
-│  ├─ cli.py                # 命令行：ingest / ask / eval / serve / info
-│  ├─ config.py             # 默认值 <- 文件 <- --set 覆盖；路径统一相对项目根
-│  ├─ types.py              # Chunk / Scored / Citation / Answer / RetrieveResult
-│  ├─ text.py               # 中英混排分词（CJK 单字+二元组）、句切分、关键词、哈希
-│  ├─ obs.py                # 日志与阶段计时
-│  ├─ pipeline.py           # 索引生命周期 + 组件装配 + 一次问答的编排
-│  ├─ ingest/               # loader（md/txt/json/jsonl/csv/pdf/docx）+ chunker
-│  ├─ index/                # embedder（hashing/bge/openai）+ bm25（自写）+ store（numpy/faiss）
-│  ├─ retrieve/             # rewrite + hybrid（RRF 融合、多跳）+ rerank（4 档）
-│  ├─ generate/             # llm（OpenAI 兼容）+ prompt + answer（LLM/抽取式 + 引用解析）
-│  ├─ eval/                 # metrics（8 项）+ run_eval（报告落盘与 ablation.csv）
-│  └─ api/                  # simple_server（标准库）+ main（FastAPI，接口一致）
-├─ scripts/
-│  ├─ ablation.py           # 消融实验批跑（A~J，逐行追加 ablation.csv）
-│  ├─ scan_refusal_threshold.py # 拒答阈值扫描（网格搜索离线判据）
-│  ├─ smoke_offline.py      # 零依赖冒烟自检（端到端两阶段）
-│  └─ check_ps_syntax.ps1   # PowerShell 脚本语法自检（纯 ASCII，避免自身踩编码坑）
-├─ tests/                   # unittest：分词/分块/BM25/RRF/重排/指标/配置/生成桩/格式/端到端（109 条）
-│  └─ support.py            # 测试临时目录（不用 tempfile，见第 10 节）
-├─ setup.ps1 / run.ps1      # 依赖安装 / 命令包装（venv 默认建在沙箱之外的 D:\rag-lab-venv）
-└─ web/index.html           # 单文件前端（无 CDN、无构建、可 file:// 打开）
+├── configs/
+│   └── default.yaml         # 系统默认配置项（分块、检索、重排、模型与评测）
+├── data/
+│   ├── corpus/              # 语料库目录（支持 markdown、txt、pdf、docx、csv、json）
+│   ├── eval/                # 标注评测数据集（qa.jsonl 基础集 / qa-v2.jsonl 60题基准）
+│   └── manifests/           # 语料元数据与来源登记
+├── rag/                     # 核心工程包
+│   ├── api/                 # Web 服务层（simple_server 原生实现 / main.py FastAPI 实现）
+│   ├── eval/                # 评测系统（metrics.py 8项指标计算 / run_eval.py 执行器）
+│   ├── generate/            # 生成层（llm.py 适配器 / answer.py 抽取与生成 / prompt.py）
+│   ├── index/               # 索引与存储（bm25.py 自写BM25 / embedder.py / store.py 向量库）
+│   ├── ingest/              # 语料接入（chunker.py 三种分块策略 / loader.py 多格式解析）
+│   ├── mcp/                 # 原生 Model Context Protocol stdio 服务器
+│   ├── retrieve/            # 检索与重排（hybrid.py RRF与多跳 / rerank.py / rewrite.py）
+│   ├── cli.py               # 命令行统一入口
+│   ├── config.py            # 配置管理与解析
+│   ├── pipeline.py          # 端到端装配与执行流水线
+│   └── text.py              # 文本预处理、分词、停用词与哈希工具
+├── reports/                 # 评测输出目录（实验 JSON / Markdown 报告及 ablation.csv）
+├── scripts/                 # 实验与工具脚本（消融实验、语料构建、阈值扫描、依赖检测等）
+├── tests/                   # 174 个全量测试用例（覆盖分词、BM25、RRF、API、MCP、端到端）
+├── web/
+│   └── index.html           # 零依赖单文件前端可视化 Demo
+├── LICENSE                  # MIT 许可证
+├── PLAN.md                  # 架构设计、评测规范与深度技术方案文档
+├── pyproject.toml           # 项目安装配置
+└── requirements.txt         # 核心运行依赖（仅 numpy）
 ```
 
 ---
 
-## 5. 几个关键设计（面试最常被追问的点）
+## 开源协议
 
-### 5.1 为什么用 RRF 而不是分数加权？
-
-向量余弦相似度（0~1）与 BM25 分数（0~几十，且随语料规模漂移）不在同一量纲。分数加权必须
-先归一化，而归一化方式（min-max / z-score）本身又引入超参，且在不同查询上不稳定。RRF 只用排名：
-
-```
-score(d) = Σ_r  w_r / (k + rank_r(d))        # 默认 k = 60
-```
-
-`k` 越小越强调"两路都排前面"的共识文档；`k=60` 是最广泛沿用的默认值。
-
-### 5.2 手算示例（可直接作为面试白板题）
-
-两路召回，`k = 60`：
-
-| 文档 | 向量通道名次 | BM25 通道名次 | RRF 分数 |
-| --- | --- | --- | --- |
-| A | 1 | 未召回 | 1/61 = 0.016393 |
-| B | 2 | 1 | 1/62 + 1/61 = 0.032522 |
-
-**B 反超 A**：单路第一不一定赢，两路都靠前才是强共识信号。这正是融合的价值，也是
-`tests/test_retrieve.py` 里被断言的性质。
-
-### 5.3 chunk_id 稳定可复现
-
-`chunk_id = <doc_id>#<序号>`，`doc_id` 取文件名主干，序号在文档内从 0 递增；
-分块是确定性的（无随机、无时间依赖）。因此评测结论可以逐条回到具体片段，
-换机器、换进程重跑结果不变。索引元数据里同时记录：
-
-- `embedder.name`：换了向量模型 → 索引自动重建（否则会用错误的向量空间检索，**这是最隐蔽的一类 bug**）；
-- `chunking`：分块参数变化 → 重建；
-- `corpus_inputs` + `corpus_signature`：记录索引实际依据的语料来源与每个文件的内容指纹
-  （`绝对路径:blake2b`）。语料内容变化 → 重建；`POST /ingest` 用自定义目录建过索引后，
-  后续启动会继续以那份语料为准（而不是悄悄换回 `paths.corpus`），要切换语料重新跑一次 `ingest` 即可。
-
-> 因此 `ingest` 始终是**全量重建**（不做增量）。元数据里已经存了每个文件的 `fingerprint`，
-> 增量更新留给进阶项：只需要比对指纹、只重算变化文档的向量并更新倒排表。
-
-### 5.4 引用与拒答是硬约束
-
-提示词要求"每句结论必须带 `[n]`、资料不足必须说资料不足"；生成层再把 `[n]` 解析回
-`(doc_id, chunk_id, quote, score)`。评测里单列两个指标：
-
-- `citation_precision`：引用落在标注文档里的比例 —— 专门抓"答案对、出处编"的幻觉；
-- `refusal_accuracy`：该拒答的拒答、该回答的不拒答 —— 抓拒答策略过/欠保守。
-
----
-
-## 6. 评测与消融
-
-指标实现见 `rag/eval/metrics.py`（纯函数，可单测）：
-
-| 指标 | 定义 | 关注什么 |
-| --- | --- | --- |
-| Recall@k | gold 文档中出现在前 k 个 chunk 所属文档（去重）里的比例 | 该找的资料有没有捞回来 |
-| Precision@k | 前 k 个 chunk 中属于 gold 文档的比例 | 候选集噪声 |
-| MRR | 首个命中 gold 的 chunk 名次倒数 | 首个正确结果是否靠前 |
-| nDCG@k | 二值相关性 DCG@k / IDCG@k（**按 doc 去重后**计算，避免同篇多块重复计分把 nDCG 抬到 1 以上） | 排序质量（同一查询下比较重排器） |
-| citation_precision / recall | 引用落在 gold 内 / gold 被引用到的比例 | 出处是否可核验 |
-| refusal_accuracy | 意图（该答 / 该拒）判断正确的比例 | 拒答策略是否合理 |
-| latency_p50 / p95 | 端到端耗时分位 | 工程可用性 |
-
-```bash
-python -m rag.cli eval --tag baseline            # 落盘 reports/eval-*.{json,md} + 追加 ablation.csv
-python scripts/ablation.py                       # 批跑 A~J 并打印对比表
-python scripts/scan_refusal_threshold.py         # 扫离线拒答阈值（覆盖率 × 命中词数 网格）
-```
-
-### 6.1 已实测的 8 行（可离线复现，`python scripts/ablation.py`）
-
-条件：5 篇示例语料 → 39 个分块、12 题评测集、哈希向量、抽取式生成器、`structural(512/96)`。
-
-| 实验 | Recall@1 | Recall@5 | MRR | nDCG@10 | 引用精确率 | 拒答准确率 | P50(ms) | P95(ms) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A 仅向量 | 0.90 | 0.95 | 1.00 | 0.9839 | 0.567 | 1.00 | 1.0 | 1.1 |
-| B 仅 BM25 | 0.90 | 0.95 | 1.00 | 0.9920 | 0.667 | 1.00 | 1.1 | 1.4 |
-| **C +RRF 融合** | 0.90 | **1.00** | 1.00 | **0.9920** | 0.667 | 1.00 | 1.2 | 1.3 |
-| D +查询改写(keyword) | 0.90 | 0.95 | 1.00 | 0.9613 | 0.583 | 1.00 | 1.2 | 1.6 |
-| E +词法重排(IDF 加权) | 0.80 | 0.95 | 0.95 | 0.9508 | 0.650 | 1.00 | 2.9 | 3.5 |
-| F +多跳(2 跳) | 0.80 | 0.95 | 0.95 | 0.9470 | 0.617 | 1.00 | 3.6 | 4.2 |
-| I 固定窗口分块(在 F 上换) | 0.80 | 0.95 | 0.95 | 0.9508 | 0.717 | 1.00 | 3.9 | 4.3 |
-| J 仅向量 + 词法重排 | 0.80 | 0.95 | 0.95 | 0.9470 | 0.650 | 1.00 | 2.7 | 3.2 |
-
-**三条真实结论**（比"每一层都提升"更值得讲，也是复试里最容易被追问的地方）：
-
-1. **只有 C（混合检索 + RRF）是稳定正向**：Recall@5 0.95→1.00、引用精确率 0.567→0.667。
-2. **改写（D）与词法重排（E/J）在这个语料上是负收益**，重排还把 P95 拉高约 3 倍。
-   原因：语料只有 5 篇且术语高度集中，BM25 已把词面信号用尽，改写的扩展词反而稀释了
-   融合排名；而词法重排的打分本身就是「查询词覆盖」的函数，与 BM25 高度相关、属重复信息。
-   **修复过程是加分项**：最初等权覆盖率让 Recall@1 从 0.90 掉到 0.70，改成 **IDF 加权**
-   后回到 0.80、nDCG@10 从 0.914 升到 0.951，但仍未超过纯 RRF 的 0.992 —— 因此默认配置
-   保持 `retrieval.rerank.enabled: false`（要试就 `--set retrieval.rerank.enabled=true`）。
-3. **多跳（F）没有增益**（0.947 vs C 的 0.992），符合"延迟涨了指标没涨 → 早停太松或
-   扩查询质量差"的预期分支：离线桥接在 39 个分块的小语料上很容易跳到无关方向。
-
-**拒答判据**：`scripts/scan_refusal_threshold.py` 做网格搜索，`0.10/1` 与 `0.10/2` 并列最优
-（12/12），取更严的 `min_hits=2` 作为发货配置。但**余量只有 0.013，且最弱样本恰好压在阈值
-边界上**——可回答题里最弱的 q08 覆盖率 0.100（正好等于 `min_coverage`），不可回答题里最强的
-q12 是 0.087。这是明确的过拟合警告：扩到 60 题以上必须重扫；而且"词面覆盖率"本身是偏弱的
-可回答性判据（更强的做法是向量相似度阈值或 LLM/NLI 判定，见 PLAN.md 第 16 章）。
-
-> 评测集只有 12 题，单题差异噪声很大，**不要据此宣称显著性**：结论表述建议写成
-> "在自建 12 题小样本上观察到的趋势"，并说明需要扩到 60 题以上（见 PLAN.md 第 9 章）。
-> 上表的用途是**证明流程可跑通 + 展示负结果的处理方式**，不是效果结论。
-
-### 6.2 换成 BGE 向量（GPU）后的同一张表
-
-`python scripts/ablation.py --embedder bge --tag-suffix=-bge`（装好 `sentence-transformers` 后，
-默认 `embedder.provider=auto` 就会走 BGE，因此这也代表默认配置；本机 RTX 4070 Laptop，
-`/health` 会显示 `device.selected=cuda`）。
-
-| 实验 | Recall@1 | Recall@5 | MRR | nDCG@10 | 引用精确率 | 拒答准确率 | P50(ms) | P95(ms) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A 仅 BGE 向量 | 0.90 | 0.95 | 1.00 | **1.0000** | **0.900** | 1.00 | 6.6 | 10.4 |
-| B 仅 BM25 | 0.90 | 0.95 | 1.00 | 0.9920 | 0.667 | 1.00 | 5.6 | 21.1 |
-| **C +RRF 融合** | 0.90 | **1.00** | 1.00 | **1.0000** | 0.717 | 1.00 | 3.8 | 18.9 |
-| D +查询改写(keyword) | 0.75 | 1.00 | 0.875 | 0.9202 | 0.650 | 0.917 | 7.2 | 27.6 |
-| E +词法重排(IDF 加权) | 0.90 | 1.00 | 1.00 | 0.9920 | 0.733 | 1.00 | 8.4 | 27.2 |
-| F +多跳(2 跳) | 0.90 | 1.00 | 1.00 | 0.9920 | 0.733 | 1.00 | 12.6 | 27.6 |
-| G F + Cross-Encoder 重排 | 0.90 | 1.00 | 1.00 | 0.9920 | 0.650 | 1.00 | **204.0** | 264.9 |
-| I 固定窗口分块(在 F 上换) | 0.80 | 0.95 | 0.95 | 0.9551 | 0.783 | 1.00 | 6.1 | 8.6 |
-| J 仅 BGE 向量 + 词法重排 | 0.90 | 0.95 | 1.00 | 0.9920 | 0.750 | 1.00 | 7.5 | 10.0 |
-| K RRF + Cross-Encoder 重排 | 0.90 | 1.00 | 1.00 | 0.9920 | 0.650 | 1.00 | **203.0** | 255.2 |
-
-命令：`python scripts/ablation.py --embedder bge --only A,B,C,D,E,F,G,I,J,K --heavy --tag-suffix=-bge`
-（`reports/ablation.csv` 每行都记录 `setting.effective.*`，可确认没有静默降级。）
-
-**五条结论**：
-
-1. **换向量模型是单项收益最大的改动**：引用精确率 0.567 → **0.900**、nDCG@10 0.9839 → **1.0000**
-   （哈希 → BGE）。"排名看着还行"不等于"证据站得住"——引用精确率差了 33 个点。
-2. **RRF 仍有召回增益**（Recall@5 0.95 → 1.00），但 nDCG@10 已到天花板，各层差距收敛。
-3. **两种重排都是负收益，代价差 40 倍**：词法重排把 nDCG@10 从 1.0000 拉到 0.9920 只多花 4.6ms；
-   **Cross-Encoder 同样 0.9920 却要多花约 200ms（P50 3.8 → 203ms，×53）**，引用精确率还从
-   0.717 降到 0.650。根因是**天花板效应**：39 个分块 + BGE + RRF 已 nDCG@10 = 1.0000，
-   重排没有提升空间；要验证重排价值必须扩语料/加难度，或在更弱的召回基线上评（在哈希基线上
-   词法重排确实把 Recall@1 从 0.70 救回 0.80）。
-4. **默认配置曾经正好等于负收益配置**：`rewrite.strategy=auto` 无 LLM 时退化成 `keyword`，
-   默认配置的评测结果就是 D 行。现已改成"有 LLM 才改写，否则 identity"，与 C 行对齐。
-   **教训：降级路径也要单独评测。**
-5. **配置与实际生效可能不一致，必须让产物说话**：`--set embedder.provider=bge` 在模型缓存缺失时
-   会静默降级为哈希向量（G/K 两行曾因此跑出"看着正常"的错误数字）。现在评测报告与
-   `ablation.csv` 都记录 `effective.embedder / reranker / generator / device`，并对降级发显式 WARNING。
-
-另有两项实测结论：
-
-- **拒答阈值随检索质量变化**：换成 BGE 后 q08 覆盖率 0.100→0.133，与 q12（0.087）的余量从
-  0.013 扩到 0.046，`0.10/0.12 × 1/2` 四组都给出 12/12。阈值是"当前检索质量"的函数，
-  换模型/换分块/扩评测集都要重扫（`scripts/scan_refusal_threshold.py`）。
-- **向量后端等价**：`index.backend=numpy` 与 `faiss` 在同一 BGE 索引上指标完全一致
-  （1.0 / 1.0 / 1.0），faiss P50 略快（4.1ms vs 4.8ms）；显式切换后端会触发索引重建。
-
----
-
-## 7. 配置与 `--set` 覆盖
-
-优先级：`rag/config.py` 内置默认值 → `configs/default.yaml` → 命令行 `--set a.b.c=v`。
-所有相对路径都相对于项目根目录，可以从任何工作目录启动。
-
-最常用的覆盖项：
-
-```bash
---set chunking.strategy=fixed                    # 分块策略消融
---set chunking.max_chars=256                     # 更小的块
---set embedder.provider=bge                      # 强制使用 BGE（失败会降级并告警）
---set retrieval.weights.vector=0 --set retrieval.weights.bm25=1   # 只保留 BM25
---set retrieval.rewrite.strategy=hyde            # 换改写策略（需 LLM）
---set retrieval.rerank.enabled=true --set retrieval.rerank.provider=lexical
---set multihop.enabled=true --set multihop.max_rounds=3
---set generation.provider=openai --set generation.model=gpt-4o-mini
---set index.backend=faiss                        # 强制 faiss（不可用则退回 numpy）
-```
-
----
-
-## 8. HTTP 接口
-
-```bash
-python -m rag.cli serve --port 8000     # 默认 auto：有 fastapi 用 fastapi，否则标准库
-# 浏览器打开 http://127.0.0.1:8000/  （页面来自 web/index.html）
-```
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/health` `/status` | 索引与组件状态（embedder / reranker / llm / generator / fusion） |
-| POST | `/query` | `{"question": "...", "top_k": 5}` → `{answer, citations, refused, latency_ms, debug, contexts}` |
-| POST | `/ingest` | `{"paths": ["data/corpus"]}` → 重建索引报告（总是全量重建，并自动重新装配组件） |
-| GET | `/` | `web/index.html` |
-
-`web/index.html` 是零依赖单文件页面：引用角标可跳转高亮、延迟分解条形图、
-三通道候选列表、组件状态徽标；也可以直接双击用 `file://` 打开，在页面顶部填写后端地址。
-
----
-
-## 9. 测试与自检
-
-```bash
-python scripts/smoke_offline.py          # 端到端冒烟：建索引 -> 问答 -> 评测，逐项 PASS/FAIL
-python -m unittest discover -s tests -v  # 单元测试（需在 rag-lab 目录下执行）
-```
-
-测试覆盖：分词与句切分、结构感知/固定窗口分块（含重叠与稳定性）、BM25 排序与
-存取往返、RRF 融合的三条性质、词法重排能否把相关片段顶上来、指标公式（含 nDCG 手算值）、
-语料加载与 **doc_id 唯一性**、哈希向量与向量库（含 1-D 入参与零维保护、faiss 回落）、
-**配置层**（YAML 与内置默认值逐键对齐、显式 `--config` 解析失败必须报错、自动发现的坏配置
-退回默认值、`--set` 覆盖）、**生成层**（用桩 LLM 验证引用编号映射、越界引用被丢弃、
-LLM 异常降级、拒答判定）、**格式层**（md/txt/json/jsonl/csv/docx，含 docx 端到端）、
-设备解析（`auto` → cpu/cuda/mps），以及**全部离线组件**的端到端闭环、索引复用、
-语料变化自动重建、`ingest()` 后重新装配。
-
----
-
-## 10. 已知局限（主动说出来的局限，比被问出来更加分）
-
-1. **示例语料只有 5 篇自写笔记**，评测集 12 题：结论只能作为方法论演示，不能当作效果证据；
-   正式使用请替换为真实领域语料并把评测集扩到 60 题以上。
-2. **离线哈希向量不是神经向量**：它对词面重合敏感、对同义改写不敏感，因此
-   "向量通道"在离线模式下的表现被低估；打开 BGE 后消融表里的 C/D 行差异会变化。
-3. **抽取式兜底答案可读性有限**：它是命中原句的拼接，不做改写；它的价值在于把
-   "检索问题"与"生成问题"分离开，而不是替代 LLM。
-4. **多跳是启发式的**：桥接查询靠关键词或 LLM 生成，没有做证据充分性判断与自我纠错
-   （Self-RAG / CRAG 那类"检索-评判-再检索"的闭环留给进阶项）。
-5. **没有做权限、缓存、限流、增量索引**：`/ingest` 是全量重建；生产化需要按文档
-   指纹做增量更新（元数据里已经记录了 `fingerprint`，接口留好了）。
-6. **BM25 索引常驻内存**：倒排表用 JSON 存盘，百万级语料应换成更紧凑的结构或数据库。
-
-### 交付前静态审查发现并已修复的缺陷（留档，说明"我是怎么验的"）
-
-代码无法在本机执行（会话 shell 不可用），因此交付前做了两路独立静态审查 + 补齐回归用例。
-审查确认的 7 个真实缺陷都已修复，并且每一条都新增了对应的测试：
-
-| 缺陷 | 后果 | 修复 |
-| --- | --- | --- |
-| 缺 pyyaml 时 `load_config` 直接抛错 | "只装 numpy 就能跑"这条主线在 CLI 入口失效 | 读取配置失败时打印提示并退回内置默认值（与 YAML 内容一致） |
-| `reranker` 未注入 `HybridRetriever` | 重排开关与 `+rerank` 消融整行失真，且状态自相矛盾 | 装配时传入 `reranker=`，并断言 `debug["reranker"]` 与组件状态一致 |
-| `corpus_signature` 恒按默认语料目录计算 | 自定义语料变了不重建、默认语料变化反而冲掉自定义索引 | 元数据记录 `corpus_inputs`，签名与重建都基于"索引实际依据的语料" |
-| `ingest()` 后不重置装配状态 | 同进程重建索引后仍用旧 `store`/`chunk_map` 回答 | `ingest()` 末尾置 `_built = False`，并加了"换语料后能检索到新文档"的用例 |
-| `_doc_id_for` 的 id 撞车 | 同名 doc_id → 同名 chunk_id → 检索静默指向错误文档 | 生成的 `stem-n` 也登记占用，用例覆盖 `a.md` / `a-1.md` / `sub/a.md` |
-| `HashingEmbedder(dim=0)` | 取模 ZeroDivisionError | `dim` 夹到最小值 1 |
-| Cross-Encoder 的"预热"是空操作 | 模型加载失败会推迟到 ask 期未捕获抛出 | 先加载模型再判空候选，降级分支真正可达 |
-| nDCG@k 的 DCG 按 chunk 累加、IDCG 只按文档数算 | 同一文档多块命中时 **nDCG > 1**（可达 1.63），消融表与报告不可信 | DCG 前按 doc 去重，并加 `min(1.0, …)` 兜底 |
-| `recall@k` 先去重再截断 | 与 `precision@k` 候选集口径不一致，多块文档系统性抬高 Recall@k | 先截断前 k 个 chunk，再去重成文档集合 |
-| 前端引用卡片用数组下标当 `[n]` | 答案不按 `[1][2][3]` 顺序引用时，点角标跳到错误卡片 | 卡片 id 与角标统一用 `Citation.index`，正文按 index 建映射 |
-| 前端把 `components.<name>` 对象当字符串 | 徽标与调试面板显示 `[object Object]` | 新增 `compName()`，取 `name`/`kind` |
-| `do_GET` 无异常兜底、静态资源用裸前缀比较 | 异常时前端只看到 "Failed to fetch"；同前缀兄弟目录可被越权读取 | 整段 try/except 返回 500；改用 `root + os.sep` 比较 |
-| `Content-Length` 未判负值、超限时未关连接 | 负值请求把连接挂死；超限后剩余字节被当成下一个请求解析 | 负值直接拒绝；超限时 `close_connection = True` |
-| 配置解析失败被一律静默吞掉 | 显式 `--config` 写错会"看起来跑成功"，实际配置没生效 | 显式路径解析失败必须抛错；只有自动发现的默认配置才退回内置默认值 |
-
-### 真正跑起来之后又发现的 3 个问题（静态审查看不到的那一类）
-
-| 问题 | 表现 | 修复 |
-| --- | --- | --- |
-| `store.add()` 先比数量再规整形状 | 传入 1-D 向量（`encode_query` 的返回值）时，`len(vectors)` 是维度数而非 1，被误判成"数量不一致" | 先 `reshape`/空判，再比数量（[store.py](rag-lab/rag/index/store.py)） |
-| 测试与冒烟脚本依赖 `tempfile` | 在受限令牌环境（沙箱 / CI / 部分容器）下 `mkdtemp` 建的目录连创建者都无法写入（`WinError 5`），13 个用例直接报错 | 新增 `tests/support.py` 的 `TempWorkspace`，在项目内 `.testtmp/` 自建临时目录；顺手让测试不再依赖系统 TEMP |
-| 抽取式生成器的拒答判据用错了信号 | 用"长度 × 排名先验 × 覆盖率"的合成分数做阈值，会把"排名第一但只是词面沾边"的句子推过阈值 → **不可回答的题被作答**；同时把标题行、表格行当答案句子 | ① 剥掉分块时拼入的标题路径、过滤 Markdown 结构行；② 拒答改用 **单句查询词覆盖率 + 命中词数**，阈值由 `scripts/scan_refusal_threshold.py` 扫描确定（回填 [configs/default.yaml](rag-lab/configs/default.yaml)，含余量不足的警告） |
-| `index.backend` 不在索引身份检查里 | 装好 faiss 后 `--set index.backend=faiss` **静默复用旧 numpy 索引** → "faiss vs numpy 对比实验"其实是同一个后端跑了两次，指标"完全一致"是假的 | 把后端纳入 `_index_matches()` 检查（`auto` 不迁移、显式指定必须与磁盘一致），并重跑一致性验证 |
-| 默认配置正好等于负收益配置 | `rewrite.strategy=auto` 在无 LLM 时退化成 `keyword` 压缩，于是"默认配置跑评测"拿到的是 D 行数字（0.75 / 0.9202 / 拒答 0.917），而 C 行是（0.90 / 1.0000 / 1.0） | `auto` 改为"有 LLM 才改写，否则 identity"；`keyword` 保留为显式消融选项。**降级路径也会改变结果，必须单独评测** |
-| 配置与实际生效不一致（静默降级） | `--set embedder.provider=bge` 在模型缓存缺失/离线时会**降级成哈希向量**：评测照跑、报告"看着正常"，数字却来自另一套实现（G/K 两行就是这么跑出错误结论的） | 评测报告、Markdown 与 `ablation.csv` 现在都记录 `effective.embedder / reranker / generator / device`，并对降级发显式 WARNING。**凡是"配置写了什么"可能不等于"实际生效什么"的地方，都必须把后者写进产物** |
-| `run.ps1` 的两个 PowerShell 陷阱 | ① `$candidates[0]` 取到字符串首字符 → venv 路径变成 `D:\Scripts\python.exe`（单元素管道退化成标量）；② `param([string[]] $CommandArgs)` 因参数名前缀匹配把 python 的 `-c` 吃掉 | ① 管道结果一律用 `@()` 包成数组；② 去掉 `param()`，改用 `$args` 原样透传。已在 [run.ps1](rag-lab/run.ps1) 头部写明原因 |
-| `.ps1` 必须存成 UTF-8 **带 BOM** | PowerShell 5.1 读无 BOM 脚本会按系统 ANSI(GBK) 解码，中文字符错位后**把字符串结尾的 `"` 当成双字节的第二个字节吃掉**——表现为"某行缺引号"的假语法错误（第 101 行背了锅，其实元凶在第 97 行的中文） | 两个脚本都存为带 BOM；新增 [check_ps_syntax.ps1](rag-lab/scripts/check_ps_syntax.ps1)（纯 ASCII）供随时自检 |
-
-另外修掉若干细节：`store.meta` 属性位置、`add()` 的 1-D 向量、`_phrase_hit` 的 off-by-one、
-重叠窗口按剩余预算裁剪（既不超 `max_chars` 也不丢重叠）、`aggregate()` 不再把缺失耗时的记录
-按 0 ms 计入分位、词法重排改为 **IDF 加权覆盖率**（等权覆盖率会让中文常见字词淹没相关词）、
-两处死代码与两处未使用导入。
-
----
-
-## 11. 与"教程式 RAG"的差异
-
-| 常见教程做法 | 本项目做法 | 为什么 |
-| --- | --- | --- |
-| `LangChain + Chroma` 一把梭 | 自己写分块、BM25、RRF、重排、评测与降级 | 面试考的是"你懂不懂链路"，黑盒无法回答"为什么 k=60""召回为什么掉了" |
-| 只用向量召回 | 向量 ∥ BM25 + RRF，双路可比对 | 中文语料里参数名、编号、缩写必须词面命中 |
-| 直接 `top_k=3` 送 LLM | 召回 20~50 → 融合 → 重排 → 送 3~6 | 召回与排序分开优化，才能定位瓶颈 |
-| 只演示"能回答" | 8 项指标 + 逐条明细 + 消融 CSV | 没有度量就没有工程结论 |
-| 强依赖模型/Key 才能跑 | 缺失依赖自动降级并如实上报 | 演示不翻车，评测结论可复现 |
-| 引用靠"看起来对" | `[n]` → `(doc_id, chunk_id, quote)` 映射 + 引用精确率 | 幻觉最典型的形态是"答案对、出处编" |
-
----
-
-## 12. 与 Cursor / VSCode 集成
-
-集成分两层：**在编辑器里开发**（调试/测试/任务一键跑）与**把 RAG 当工具接进编辑器 AI**（MCP）。
-
-### 12.1 开发配置：`.vscode/`
-
-| 文件 | 内容 |
-| --- | --- |
-| `settings.json` | 解释器指向 `D:\rag-lab-venv\Scripts\python.exe`；unittest 发现配置；**集成终端自动注入 `HF_HOME` / `PYTHONUTF8` / `HF_HUB_OFFLINE`**（与 `run.ps1` 一致，避免"脚本能跑、终端里跑不了"）；排除 `.hf-cache`/`.testtmp` 等噪音 |
-| `launch.json` | 7 个调试配置：`rag: ask` / `ingest` / `eval` / `serve(FastAPI)` / **`MCP 服务器`** / 当前测试文件 / 全部测试 |
-| `tasks.json` | 12 个一键任务：重建索引、提问、评测（v2 集）、**消融实验（BGE + 全部行）**、全部测试、冒烟自检、重依赖自检、导入文档目录、生成评测候选（启发式/LLM）、起服务、拒答阈值扫描 |
-| `extensions.json` | 推荐扩展：Python/Pylance/debugpy、Ruff、PowerShell、YAML、Markdown、**GitHub Copilot Chat**（用 MCP 需要它） |
-| `mcp.json` | 把 RAG 作为 MCP 工具接进 VSCode Copilot Chat |
-
-用编辑器打开 `rag-lab` 文件夹即可：跑默认测试任务（`Ctrl+Shift+B`）或在 `F5` 里选 `rag: ask` 直接断点调试问答链路。
-
-### 12.2 把 RAG 接进编辑器 AI（MCP 服务器）
-
-[rag/mcp/server.py](rag-lab/rag/mcp/server.py) 是一个**零依赖的 MCP（Model Context Protocol）stdio 服务器**——
-协议本身就是"一行一个 JSON-RPC 消息"，所以没有引入任何第三方包：
-
-```bash
-python -m rag.mcp.server                 # 手动起（调试用）
-python -m rag.mcp.server --allow-ingest  # 额外允许通过 MCP 重建索引
-```
-
-暴露 4 个工具：
-
-| 工具 | 作用 | 是否花钱 |
-| --- | --- | --- |
-| `kb_stats()` | 索引状态与**实际生效**的组件（向量模型/重排器/生成器/设备） | 否 |
-| `kb_search(query, top_k)` | 混合检索（向量 + BM25 + RRF，可重排），返回 chunk_id、分数与原文 | 否 |
-| `kb_answer(question, top_k)` | 完整问答，带 `[n]` 引用与耗时；资料不足会明确拒答 | 配置了 LLM 才花钱 |
-| `kb_ingest(paths)` | 全量重建索引（默认禁用，需 `--allow-ingest`） | 否 |
-
-接线模板已放进仓库（换机器只需改里面的绝对路径）：
-
-- **Cursor**：[.cursor/mcp.json](rag-lab/.cursor/mcp.json) → 重启 Cursor 或 Settings → MCP 点 Refresh，看到 `rag-lab` 变绿即可。
-- **VSCode**：[.vscode/mcp.json](rag-lab/.vscode/mcp.json) → 命令面板 `MCP: List Servers` → 启动 `rag-lab` → 在 Copilot Chat 的 Agent 模式里让它调用这些工具。
-
-接好后可以直接在编辑器里说：
-
-> 用 rag-lab 查一下"RRF 的常数 k 取多少"，并把引用出处贴给我。
-
-排错三条（都实际踩过）：
-
-1. **stdout 必须只有协议消息**：混进任何日志都会让客户端解析失败。本项目日志一律走 stderr，
-   并且有单元测试锁死这条约束（`test_stdio_output_is_protocol_only`）。
-2. **首次调用才加载模型**：`kb_stats` 之前不会加载 BGE（惰性构建），以免拖慢编辑器启动；
-   所以第一次 `kb_search` 会有几秒到十几秒的加载时间。
-3. **`PYTHONPATH` 要指向项目根**：编辑器启动 MCP 进程时的 cwd 不一定等于项目根，模板里用
-   绝对路径显式指定了。
-
----
-
-## 13. 语料与评测集扩建（打破评测天花板）
-
-5 篇手写语料会把所有指标顶到 `nDCG@10 = 1.0000`，此时**任何组件差异都测不出来**——这是本轮
-最值钱的发现。扩建分三步，三个脚本各管一段：
-
-```bash
-# 1) 导入你自己的文档（md/txt/pdf/docx/json/jsonl/csv 都支持，可选按标题层级拆章）
-python scripts/build_corpus.py "D:\\我的资料" --out data/corpus --split-level 2 --dry-run
-python scripts/build_corpus.py "D:\\我的资料" --out data/corpus --prefix mydocs
-
-# 2) 快速补充公开语料（带来源与许可登记；本例 = 5 篇手写 + 43 篇中文维基）
-python scripts/fetch_public_corpus.py wikipedia --prefix wiki --limit 40 --delay 0.7 --titles 检索增强生成 向量数据库
-python scripts/fetch_public_corpus.py arxiv --query 'abs:"retrieval augmented generation"' --limit 25
-
-# 3) 半自动生成评测候选 → 人工在复核表勾选 → 回填评测集
-python scripts/gen_eval_candidates.py generate --provider heuristic --per-doc 2 --max-docs 48
-python scripts/gen_eval_candidates.py generate --provider llm --model deepseek-chat \
-       --api-base https://api.deepseek.com/v1 --api-key-env DEEPSEEK_API_KEY --max-docs 30
-python scripts/gen_eval_candidates.py promote --only-checked --qa data/eval/qa-v2.jsonl
-python scripts/gen_eval_candidates.py stats
-```
-
-三条值得讲的取舍：
-
-- **来源与许可单独登记**（`data/manifests/corpus.json`），**不写进正文**——写进正文会污染检索与生成；
-- **去重分两层**：内容 SHA1 判完全重复、token Jaccard > 0.9 判近重复（维基条目互相抄段落很常见）；
-- **"领域外问题"的判据要落在稀有词上**：最初用"IDF 加权覆盖率 < 0.3"，语料一扩到 48 篇就整体失效
-  （长问题总会撞上一堆常见二元组，覆盖率全被抬到 0.5 上下，一条都产不出来）；改成
-  **"主题实词在语料里出现 ≥2 次的比例"** 之后才分得开（领域内 0.71~1.00，领域外 0.00~0.40）。
-
-### 13.1 扩建前后的真实对比（同一套 BGE + 真实 LLM 生成 + GPU）
-
-| 实验（v2：48 篇 / 685 块 / 60 题） | R@1 | R@5 | MRR | nDCG@10 | 引用精确率 | P50 | P95 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| A 仅向量 | 0.931 | 0.974 | 0.963 | 0.9775 | 0.905 | 1402 | 2377 |
-| B 仅 BM25 | 0.914 | 0.983 | 0.956 | 0.9695 | 0.917 | 1465 | 2259 |
-| **C +RRF** | 0.931 | **1.000** | 0.971 | 0.9809 | **0.934** | 1453 | 2281 |
-| D +改写 | **0.845** | 1.000 | **0.922** | **0.9433** | 0.928 | 1492 | 2387 |
-| E +词法重排 | 0.966 | 1.000 | 0.991 | 0.9901 | 0.894 | 1508 | 3052 |
-| **F +多跳** | **0.983** | 0.991 | **1.000** | **0.9960** | 0.862 | 2938 | 3552 |
-| G F + Cross-Encoder | 0.957 | 1.000 | 0.983 | 0.9876 | 0.876 | 4329 | 15666 |
-| I 固定窗口分块 | 0.948 | 0.991 | 0.983 | 0.9859 | 0.931 | 2745 | 3515 |
-| **J 仅向量 + 词法重排** | 0.966 | 0.991 | 0.991 | 0.9923 | 0.917 | 1482 | 2756 |
-| **K RRF + Cross-Encoder** | 0.966 | 1.000 | 0.991 | 0.9923 | 0.885 | 1740 | 2733 |
-
-| 关键对比 | 旧（39 块 / 12 题） | 新（685 块 / 60 题） |
-| --- | --- | --- |
-| nDCG@10 天花板 | **1.0000**（无区分度） | 0.9775~0.9960（有区分度） |
-| 词法重排 | **负**（1.0000 → 0.9920） | **正**（0.9809 → 0.9901，MRR 0.971 → 0.991） |
-| Cross-Encoder（配 RRF） | 负，且慢 ×53 | **正**（0.9809 → 0.9923，仅 +287ms） |
-| 分块策略（固定 vs 结构） | 几乎无差异 | **结构感知 +1 pt nDCG、+1.9 pt R@1** |
-| 多跳 | 无收益 | **全场最佳**（nDCG 0.9960 / MRR 1.000，P50 ×2） |
-| 关键词改写 | 负 | 负且更明显（R@1 0.931 → 0.845） |
-
-**结论**：所谓"重排没用、多跳没用"是**小语料天花板造成的假象**。把语料从 39 块扩到 685 块、
-题目从 12 道扩到 60 道（高难度的 comparison/multihop 占 46/60）之后，**词法重排、Cross-Encoder、
-结构感知分块三者的收益全部翻正**，而"关键词改写"依然稳定为负——这才是能拿出去讲的结论。
-
-> **两条必须一起说的代价**：① 多跳在配了真实 LLM 后，桥接查询会**多花一次 LLM 调用**，
-> `G` 行 P95 因此飙到 15.7 s（v1 无 LLM 时完全看不到这个代价）；② 60 题里 48 题是 LLM 生成、
-> **未经人工筛选**，按 PLAN 第 9 章标准只能算趋势证据，人工过一遍复核表
-> （[candidates_review.md](rag-lab/data/eval/candidates_review.md)）后才是最终结论。
-
+本项目采用 [MIT 许可证](LICENSE) 开源。欢迎交流、测试与贡献！
